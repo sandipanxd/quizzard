@@ -22,12 +22,12 @@
       border: 1px solid rgba(255, 255, 255, 0.05);
     }
 
-    /* Style for checked options */
-    .option-card input[type="radio"]:checked+.option-label {
-      background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.15) 100%);
-      border-color: rgba(217, 119, 6, 0.6);
-      box-shadow: 0 0 10px rgba(245, 158, 11, 0.15);
-      color: #fef3c7;
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fadeIn {
+      animation: fadeIn 0.3s ease-out forwards;
     }
   </style>
 </head>
@@ -44,7 +44,7 @@
       <div class="flex items-center gap-3">
         <span class="text-3xl">📖</span>
         <div>
-          <h2 class="text-xl font-bold ...">Quizzard Session</h2>
+          <h2 class="text-xl font-bold">Quizzard Session</h2>
           <p class="text-xs text-stone-400">
             Welcome back,
             <span id="user-name-display" class="text-amber-300 font-semibold"></span>
@@ -75,14 +75,43 @@
       </div>
 
       <!-- Quiz form -->
-      <form id="quiz-form" class="hidden space-y-8">
-        <div id="quiz-container" class="space-y-8"></div>
+      <form id="quiz-form" class="hidden space-y-6">
+        <!-- Progress and Timer Header -->
+        <div class="flex flex-col sm:flex-row justify-between items-center pb-4 border-b border-stone-800/80 gap-4">
+          <div class="w-full sm:w-2/3">
+            <div class="flex justify-between text-xs text-stone-400 mb-1">
+              <span id="question-progress-text" class="font-medium">Question 1 of 5</span>
+              <span id="quiz-percent-text" class="font-semibold text-amber-400">20% Complete</span>
+            </div>
+            <div class="w-full bg-stone-950/60 rounded-full h-2 overflow-hidden border border-stone-850">
+              <div id="quiz-progress-bar" class="bg-gradient-to-r from-amber-500 to-orange-500 h-2 transition-all duration-300" style="width: 20%"></div>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 bg-stone-950/40 border border-stone-850 rounded-lg px-4 py-2">
+            <span class="text-stone-400 text-sm">⏱️ Timer:</span>
+            <span id="question-timer" class="text-xl font-bold font-mono text-amber-400">20s</span>
+          </div>
+        </div>
 
+        <!-- Question Container -->
+        <div id="quiz-container" class="space-y-6"></div>
+
+        <!-- Explanation card (revealed after option selection or timeout) -->
+        <div id="explanation-container" class="hidden p-5 bg-amber-950/20 border border-amber-500/30 rounded-xl space-y-2 animate-fadeIn">
+          <div class="flex items-center gap-2 text-amber-400 text-sm font-semibold">
+            <span>💡</span> Concept Explanation
+          </div>
+          <p id="explanation-text" class="text-sm text-amber-200/90 leading-relaxed"></p>
+        </div>
+
+        <!-- Navigation Buttons -->
         <div class="pt-4 border-t border-stone-850 flex flex-col sm:flex-row gap-4 justify-between items-center">
-          <p class="text-xs text-stone-500">Ensure all questions are answered before submitting.</p>
-          <button type="submit"
-            class="w-full sm:w-auto bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-semibold px-8 py-3 rounded-lg shadow-lg active:scale-[0.98] transition duration-300">
-            Submit Answers
+          <p id="helper-status-text" class="text-xs text-stone-500">Select an option to check your answer.</p>
+          <button id="next-btn" type="button" class="hidden w-full sm:w-auto bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-semibold px-8 py-3 rounded-lg shadow-lg active:scale-[0.98] transition duration-300 flex items-center justify-center gap-2">
+            <span>Next Question</span> ➡️
+          </button>
+          <button id="submit-btn" type="button" class="hidden w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold px-8 py-3 rounded-lg shadow-lg active:scale-[0.98] transition duration-300 flex items-center justify-center gap-2">
+            <span>Submit Quiz</span> 🏆
           </button>
         </div>
       </form>
@@ -90,6 +119,13 @@
 
     <script>
       let audioCtx;
+      let quizQuestions = [];
+      let currentQuestionIndex = 0;
+      let userAnswers = {};
+      let timerInterval = null;
+      const QUESTION_TIME_LIMIT = 20; // seconds
+      let timeLeft = QUESTION_TIME_LIMIT;
+      let soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
 
       function playClickSound() {
         if (!audioCtx) {
@@ -114,6 +150,7 @@
         oscillator.start();
         oscillator.stop(audioCtx.currentTime + 0.08);
       }
+
       async function loadSectionName(sectionId) {
         const response = await fetch(`/api/quiz/sections/${sectionId}`);
         const section = await response.json();
@@ -121,100 +158,241 @@
       }
 
       async function loadQuestions(sectionId, difficulty) {
-        const response = await fetch(`/api/quiz/questions/${sectionId}/${difficulty}`);
-        const questions = await response.json();
+        try {
+          const response = await fetch(`/api/quiz/questions/${sectionId}/${difficulty}`);
+          quizQuestions = await response.json();
 
-        const loadingElem = document.getElementById('quiz-loading');
-        const quizForm = document.getElementById('quiz-form');
-        const quizContainer = document.getElementById('quiz-container');
+          const loadingElem = document.getElementById('quiz-loading');
+          const quizForm = document.getElementById('quiz-form');
 
-        quizContainer.innerHTML = '';
+          if (quizQuestions.length === 0) {
+            loadingElem.innerHTML = `
+              <p class="text-amber-400 text-sm font-semibold mb-2">No questions found for this category and difficulty.</p>
+              <a href="/" class="text-xs text-stone-400 hover:text-white underline">Go back to main menu</a>
+            `;
+            return;
+          }
 
-        questions.forEach((question, index) => {
-          const questionElem = document.createElement('div');
-          questionElem.classList.add('p-6', 'border', 'border-stone-800', 'rounded-xl', 'bg-stone-900/30', 'space-y-4');
+          // Initialize game state
+          currentQuestionIndex = 0;
+          userAnswers = {};
 
-          questionElem.innerHTML = `
-          <div class="flex items-start gap-3">
-            <span class="bg-amber-500/20 text-amber-300 font-bold text-xs rounded-full px-2.5 py-1 mt-0.5">${index + 1}</span>
-            <p class="text-lg font-medium text-stone-100">${question.question}</p>
-          </div>
-          
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 ml-8">
-            <!-- Option 1 -->
-            <label class="option-card relative cursor-pointer block">
-              <input type="radio" name="question-${question.id}" value="1" class="sr-only" required>
-              <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200">
-                ${question.option1}
-              </div>
-            </label>
+          loadingElem.classList.add('hidden');
+          quizForm.classList.remove('hidden');
 
-            <!-- Option 2 -->
-            <label class="option-card relative cursor-pointer block">
-              <input type="radio" name="question-${question.id}" value="2" class="sr-only">
-              <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200">
-                ${question.option2}
-              </div>
-            </label>
-
-            <!-- Option 3 -->
-            <label class="option-card relative cursor-pointer block">
-              <input type="radio" name="question-${question.id}" value="3" class="sr-only">
-              <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200">
-                ${question.option3}
-              </div>
-            </label>
-
-            <!-- Option 4 -->
-            <label class="option-card relative cursor-pointer block">
-              <input type="radio" name="question-${question.id}" value="4" class="sr-only">
-              <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200">
-                ${question.option4}
-              </div>
-            </label>
-          </div>
-        `;
-          quizContainer.appendChild(questionElem);
-          questionElem
-            .querySelectorAll('input[type="radio"]')
-            .forEach(radio => {
-              radio.addEventListener('change', () => {
-                if (
-                  localStorage.getItem('soundEnabled')
-                  !== 'false'
-                ) {
-                  playClickSound();
-                }
-              });
-            });
-        });
-
-        loadingElem.classList.add('hidden');
-        quizForm.classList.remove('hidden');
+          renderQuestion(currentQuestionIndex);
+        } catch (err) {
+          console.error("Error loading questions:", err);
+          const loadingElem = document.getElementById('quiz-loading');
+          loadingElem.innerHTML = `
+            <p class="text-red-400 text-sm font-semibold mb-2">Failed to load quiz questions.</p>
+            <a href="/" class="text-xs text-stone-400 hover:text-white underline">Go back to main menu</a>
+          `;
+        }
       }
 
-      document.getElementById('quiz-form').addEventListener('submit', async function (event) {
-        event.preventDefault();
-        const formData = new FormData(this);
-        const data = {};
-        formData.forEach((value, key) => {
-          data[key] = value;
+      function renderQuestion(index) {
+        if (index < 0 || index >= quizQuestions.length) return;
+        
+        const question = quizQuestions[index];
+        const quizContainer = document.getElementById('quiz-container');
+        
+        // Update Progress Bar
+        const progressPercent = Math.round(((index + 1) / quizQuestions.length) * 100);
+        document.getElementById('question-progress-text').textContent = `Question ${index + 1} of ${quizQuestions.length}`;
+        document.getElementById('quiz-percent-text').textContent = `${progressPercent}% Complete`;
+        document.getElementById('quiz-progress-bar').style.width = `${progressPercent}%`;
+
+        // Render question HTML
+        quizContainer.innerHTML = `
+          <div class="p-6 border border-stone-850 rounded-xl bg-stone-900/30 space-y-4 animate-fadeIn">
+            <div class="flex items-start gap-3">
+              <span class="bg-amber-500/20 text-amber-300 font-bold text-xs rounded-full px-2.5 py-1 mt-0.5">${index + 1}</span>
+              <p class="text-lg font-medium text-stone-100">${question.question}</p>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 ml-8" id="options-group">
+              <!-- Option 1 -->
+              <label class="option-card relative cursor-pointer block" data-option="1">
+                <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200 flex items-center justify-between">
+                  <span>${question.option1}</span>
+                  <span class="option-feedback hidden text-base"></span>
+                </div>
+              </label>
+
+              <!-- Option 2 -->
+              <label class="option-card relative cursor-pointer block" data-option="2">
+                <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200 flex items-center justify-between">
+                  <span>${question.option2}</span>
+                  <span class="option-feedback hidden text-base"></span>
+                </div>
+              </label>
+
+              <!-- Option 3 -->
+              <label class="option-card relative cursor-pointer block" data-option="3">
+                <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200 flex items-center justify-between">
+                  <span>${question.option3}</span>
+                  <span class="option-feedback hidden text-base"></span>
+                </div>
+              </label>
+
+              <!-- Option 4 -->
+              <label class="option-card relative cursor-pointer block" data-option="4">
+                <div class="option-label p-3.5 border border-stone-800 bg-stone-950/40 hover:border-stone-700 rounded-lg text-sm text-stone-400 hover:text-stone-200 transition duration-200 flex items-center justify-between">
+                  <span>${question.option4}</span>
+                  <span class="option-feedback hidden text-base"></span>
+                </div>
+              </label>
+            </div>
+          </div>
+        `;
+
+        // Hide Explanation and Next/Submit buttons initially
+        document.getElementById('explanation-container').classList.add('hidden');
+        document.getElementById('next-btn').classList.add('hidden');
+        document.getElementById('submit-btn').classList.add('hidden');
+        document.getElementById('helper-status-text').textContent = "Select an option to check your answer.";
+        document.getElementById('helper-status-text').className = "text-xs text-stone-500";
+
+        // Bind click events to options
+        const optionCards = quizContainer.querySelectorAll('.option-card');
+        optionCards.forEach(card => {
+          card.addEventListener('click', () => {
+            const selectedOption = parseInt(card.getAttribute('data-option'), 10);
+            handleAnswerSelection(selectedOption);
+          });
         });
 
-        if (Object.keys(data).length === 0) {
-          alert('You cannot submit without answering any questions');
-          return;
-        }
+        // Start Countdown Timer
+        startTimer();
+      }
 
-        // Show loader on submit button
-        const submitBtn = this.querySelector('button[type="submit"]');
+      function startTimer() {
+        clearInterval(timerInterval);
+        
+        timeLeft = QUESTION_TIME_LIMIT;
+        const timerDisplay = document.getElementById('question-timer');
+        timerDisplay.textContent = `${timeLeft}s`;
+        timerDisplay.className = "text-xl font-bold font-mono text-amber-400";
+
+        timerInterval = setInterval(() => {
+          timeLeft--;
+          timerDisplay.textContent = `${timeLeft}s`;
+          
+          if (timeLeft <= 5) {
+            timerDisplay.className = "text-xl font-bold font-mono text-red-500 animate-pulse";
+          }
+          
+          if (timeLeft <= 0) {
+            clearInterval(timerInterval);
+            handleTimeout();
+          }
+        }, 1000);
+      }
+
+      function handleTimeout() {
+        const question = quizQuestions[currentQuestionIndex];
+        const questionKey = `question-${question.id}`;
+        
+        userAnswers[questionKey] = 0;
+        
+        highlightOptions(0, question.correct_option);
+        revealExplanation(question.explanation);
+        
+        const helperText = document.getElementById('helper-status-text');
+        helperText.textContent = "Time's up!";
+        helperText.className = "text-xs text-red-400 font-semibold animate-pulse";
+        
+        showNavButtons();
+      }
+
+      function handleAnswerSelection(selectedOption) {
+        const question = quizQuestions[currentQuestionIndex];
+        const questionKey = `question-${question.id}`;
+        
+        if (userAnswers[questionKey] !== undefined) return;
+        
+        clearInterval(timerInterval);
+        userAnswers[questionKey] = selectedOption;
+        
+        if (soundEnabled) {
+          playClickSound();
+        }
+        
+        highlightOptions(selectedOption, question.correct_option);
+        revealExplanation(question.explanation);
+        showNavButtons();
+      }
+
+      function highlightOptions(selectedOption, correctOption) {
+        const optionCards = document.querySelectorAll('.option-card');
+        
+        optionCards.forEach(card => {
+          const optionNum = parseInt(card.getAttribute('data-option'), 10);
+          const optionLabel = card.querySelector('.option-label');
+          const feedbackSpan = card.querySelector('.option-feedback');
+          
+          optionLabel.classList.remove('hover:border-stone-700', 'hover:text-stone-200');
+          optionLabel.classList.add('cursor-default');
+          card.style.pointerEvents = 'none';
+
+          if (optionNum === correctOption) {
+            optionLabel.classList.remove('border-stone-800', 'bg-stone-950/40', 'text-stone-400');
+            optionLabel.classList.add('border-emerald-500/70', 'bg-emerald-950/20', 'text-emerald-300');
+            feedbackSpan.textContent = "✅";
+            feedbackSpan.classList.remove('hidden');
+          } else if (optionNum === selectedOption) {
+            optionLabel.classList.remove('border-stone-800', 'bg-stone-950/40', 'text-stone-400');
+            optionLabel.classList.add('border-red-500/70', 'bg-red-950/20', 'text-red-300');
+            feedbackSpan.textContent = "❌";
+            feedbackSpan.classList.remove('hidden');
+          } else {
+            optionLabel.classList.add('opacity-40');
+          }
+        });
+      }
+
+      function revealExplanation(explanation) {
+        const explanationContainer = document.getElementById('explanation-container');
+        const explanationText = document.getElementById('explanation-text');
+        
+        explanationText.textContent = explanation || "No explanation available for this question.";
+        explanationContainer.classList.remove('hidden');
+      }
+
+      function showNavButtons() {
+        const isLastQuestion = currentQuestionIndex === quizQuestions.length - 1;
+        const helperText = document.getElementById('helper-status-text');
+        
+        if (isLastQuestion) {
+          document.getElementById('submit-btn').classList.remove('hidden');
+          if (timeLeft > 0) {
+            helperText.textContent = "Ready to submit the quiz!";
+            helperText.className = "text-xs text-emerald-400 font-semibold";
+          }
+        } else {
+          document.getElementById('next-btn').classList.remove('hidden');
+          if (timeLeft > 0) {
+            helperText.textContent = "Proceed to the next question.";
+            helperText.className = "text-xs text-amber-400 font-semibold";
+          }
+        }
+      }
+
+      document.getElementById('next-btn').addEventListener('click', () => {
+        currentQuestionIndex++;
+        renderQuestion(currentQuestionIndex);
+      });
+
+      async function submitQuiz() {
+        const submitBtn = document.getElementById('submit-btn');
         submitBtn.disabled = true;
         submitBtn.innerHTML = `<span class="animate-pulse">Submitting...</span>`;
 
         try {
           const response = await fetch('/api/quiz/submit', {
             method: 'POST',
-            body: JSON.stringify(data),
+            body: JSON.stringify(userAnswers),
             headers: { 'Content-Type': 'application/json' }
           });
 
@@ -228,38 +406,35 @@
             headers: { 'Content-Type': 'application/json' }
           });
 
-          // Save user answers for explanations review
-          window.localStorage.setItem('userAnswers', JSON.stringify(data));
-
+          window.localStorage.setItem('userAnswers', JSON.stringify(userAnswers));
           window.location.href = `/result?score=${result.score}&total=${result.total}&sectionId=${sectionId}`;
         } catch (err) {
           console.error("Error submitting quiz:", err);
           submitBtn.disabled = false;
-          submitBtn.textContent = "Submit Answers";
+          submitBtn.innerHTML = `<span>Submit Quiz</span> 🏆`;
           alert("An error occurred while submitting. Please try again.");
         }
+      }
+
+      document.getElementById('submit-btn').addEventListener('click', submitQuiz);
+
+      // Block form element default submits
+      document.getElementById('quiz-form').addEventListener('submit', function (event) {
+        event.preventDefault();
       });
 
       document.addEventListener('DOMContentLoaded', () => {
         const soundToggle = document.getElementById('sound-toggle');
 
-        let soundEnabled =
-          localStorage.getItem('soundEnabled') !== 'false';
-
-        soundToggle.textContent =
-          soundEnabled ? '🔊' : '🔇';
+        soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
+        soundToggle.textContent = soundEnabled ? '🔊' : '🔇';
 
         soundToggle.addEventListener('click', () => {
           soundEnabled = !soundEnabled;
-
-          localStorage.setItem(
-            'soundEnabled',
-            soundEnabled
-          );
-
-          soundToggle.textContent =
-            soundEnabled ? '🔊' : '🔇';
+          localStorage.setItem('soundEnabled', soundEnabled);
+          soundToggle.textContent = soundEnabled ? '🔊' : '🔇';
         });
+
         const userName = window.localStorage.getItem('userName');
         const sectionId = window.localStorage.getItem('sectionId');
         const difficulty = window.localStorage.getItem('difficulty');
